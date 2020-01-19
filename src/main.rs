@@ -10,10 +10,10 @@ fn main() {
     let rl = Arc::new(Mutex::new(vec![]));
     let mut reactor = Reactor::new();
     let waker = MyWaker::new(1, thread::current(), rl.clone());
-    reactor.register(2, waker);
+    reactor.register(2, waker.into_waker());
 
     let waker = MyWaker::new(2, thread::current(), rl.clone());
-    reactor.register(1, waker);
+    reactor.register(1, waker.into_waker());
     reactor.close();
 
     loop {
@@ -51,11 +51,17 @@ impl MyWaker {
     }
 
     fn into_waker(&self) -> Waker {
-        let vtable = RawWakerVTable::new(|_| {}, Self::wake as Fn(MyWaker), |_| {}, |_| {});
-        let raw_waker = RawWaker::new(&self, vtable);
-        let waker = Waker::from_raw(raw_waker);
+    let self_data: *const MyWaker = self;
+        let vtable = RawWakerVTable::new(|s| {
+           RawWaker::new(s, )
+        }, |s| {Self::wake;}, |_| {}, |_| {});
+
+        let raw_waker = RawWaker::new(self_data as *const (), &vtable);
+        let waker = unsafe { Waker::from_raw(raw_waker) };
+        waker
     }
 }
+
 
 trait Fut {
     type Item;
