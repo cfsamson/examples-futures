@@ -3,13 +3,16 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use std::task::Waker;
+use std::task::{RawWaker, RawWakerVTable};
+
 fn main() {
     let rl = Arc::new(Mutex::new(vec![]));
     let mut reactor = Reactor::new();
-    let waker = Waker::new(1, thread::current(), rl.clone());
+    let waker = MyWaker::new(1, thread::current(), rl.clone());
     reactor.register(2, waker);
 
-    let waker = Waker::new(2, thread::current(), rl.clone());
+    let waker = MyWaker::new(2, thread::current(), rl.clone());
     reactor.register(1, waker);
     reactor.close();
 
@@ -27,15 +30,15 @@ fn main() {
     }
 }
 
-struct Waker {
+struct MyWaker {
     id: usize,
     thread: thread::Thread,
     readylist: Arc<Mutex<Vec<usize>>>,
 }
 
-impl Waker {
+impl MyWaker {
     fn new(id: usize, thread: thread::Thread, readylist: Arc<Mutex<Vec<usize>>>) -> Self {
-        Waker {
+        MyWaker {
             id,
             thread,
             readylist,
@@ -44,7 +47,13 @@ impl Waker {
     fn wake(&self) {
         let mut readylist = self.readylist.lock().unwrap();
         readylist.push(self.id);
-        self.thread.unpark();
+        self.thread.unpark();  
+    }
+
+    fn into_waker(&self) -> Waker {
+        let vtable = RawWakerVTable::new(|_| {}, Self::wake as Fn(MyWaker), |_| {}, |_| {});
+        let raw_waker = RawWaker::new(&self, vtable);
+        let waker = Waker::from_raw(raw_waker);
     }
 }
 
