@@ -51,9 +51,11 @@ impl MyWaker {
     }
 
     fn into_waker(&self) -> Waker {
-    let self_data: *const MyWaker = self;
+    let self_data: *const &MyWaker = &self;
+    let self_data: [usize; 2] = unsafe { *(self_data as *const [usize; 2])};
+    
         let vtable = RawWakerVTable::new(|s| {
-           RawWaker::new(s, )
+           RawWaker::new(s, self_data[1])
         }, |s| {Self::wake;}, |_| {}, |_| {});
 
         let raw_waker = RawWaker::new(self_data as *const (), &vtable);
