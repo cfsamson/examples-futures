@@ -6,10 +6,10 @@ use std::thread::{self, JoinHandle};
 fn main() {
     let rl = Arc::new(Mutex::new(vec![]));
     let mut reactor = Reactor::new();
-    let waker = MyWaker::new(1, thread::current(), rl.clone());
+    let waker = Waker::new(1, thread::current(), rl.clone());
     reactor.register(2, waker);
 
-    let waker = MyWaker::new(2, thread::current(), rl.clone());
+    let waker = Waker::new(2, thread::current(), rl.clone());
     reactor.register(1, waker);
     reactor.close();
 
@@ -27,27 +27,20 @@ fn main() {
     }
 }
 
-trait Waker {
-    fn wake(&self);
-}
-
-struct MyWaker {
+struct Waker {
     id: usize,
     thread: thread::Thread,
     readylist: Arc<Mutex<Vec<usize>>>,
 }
 
-impl MyWaker {
+impl Waker {
     fn new(id: usize, thread: thread::Thread, readylist: Arc<Mutex<Vec<usize>>>) -> Self {
-        MyWaker {
+        Waker {
             id,
             thread,
             readylist,
         }
     }
-}
-
-impl Waker for MyWaker {
     fn wake(&self) {
         let mut readylist = self.readylist.lock().unwrap();
         readylist.push(self.id);
@@ -105,7 +98,7 @@ impl Reactor {
                 let outstanding = outstanding_clone.clone();
                 match event {
                     Event::Close => break,
-                    Event::Simple((waker, sleep)) => {
+                    Event::Simple(waker, sleep) => {
                         let event_handle = thread::spawn(move || {
                             thread::sleep(std::time::Duration::from_secs(sleep));
                             outstanding.fetch_sub(1, Ordering::Relaxed);
@@ -129,9 +122,9 @@ impl Reactor {
         }
     }
 
-    fn register(&mut self, duration: u64, waker: impl Waker + 'static + Send) {
+    fn register(&mut self, duration: u64, waker: Waker) {
         self.dispatcher
-            .send(Event::Simple((Box::new(waker), duration)))
+            .send(Event::Simple(waker, duration))
             .unwrap();
         self.outstanding.fetch_add(1, Ordering::Relaxed);
     }
@@ -154,5 +147,5 @@ impl Drop for Reactor {
 
 enum Event {
     Close,
-    Simple((Box<dyn Waker + 'static + Send>, u64)),
+    Simple(Waker, u64),
 }
