@@ -9,11 +9,11 @@ use std::task::{RawWaker, RawWakerVTable};
 fn main() {
     let rl = Arc::new(Mutex::new(vec![]));
     let mut reactor = Reactor::new();
-    let waker = MyWaker::new(1, thread::current(), rl.clone());
-    reactor.register(2, waker.into_waker());
+    let waker = waker_new(1, thread::current(), rl.clone());
+    reactor.register(2, waker_into_waker(&waker));
 
-    let waker = MyWaker::new(2, thread::current(), rl.clone());
-    reactor.register(1, waker.into_waker());
+    let waker = waker_new(2, thread::current(), rl.clone());
+    reactor.register(1, waker_into_waker(&waker));
     reactor.close();
 
     loop {
@@ -30,40 +30,47 @@ fn main() {
     }
 }
 
+#[derive(Clone)]
 struct MyWaker {
     id: usize,
     thread: thread::Thread,
     readylist: Arc<Mutex<Vec<usize>>>,
 }
 
-impl MyWaker {
-    fn new(id: usize, thread: thread::Thread, readylist: Arc<Mutex<Vec<usize>>>) -> Self {
-        MyWaker {
-            id,
-            thread,
-            readylist,
-        }
-    }
-    fn wake(&self) {
-        let mut readylist = self.readylist.lock().unwrap();
-        readylist.push(self.id);
-        self.thread.unpark();  
-    }
-
-    fn into_waker(&self) -> Waker {
-    let self_data: *const &MyWaker = &self;
-    let self_data: [usize; 2] = unsafe { *(self_data as *const [usize; 2])};
-    
-        let vtable = RawWakerVTable::new(|s| {
-           RawWaker::new(s, self_data[1])
-        }, |s| {Self::wake;}, |_| {}, |_| {});
-
-        let raw_waker = RawWaker::new(self_data as *const (), &vtable);
-        let waker = unsafe { Waker::from_raw(raw_waker) };
-        waker
+fn waker_new(id: usize, thread: thread::Thread, readylist: Arc<Mutex<Vec<usize>>>) -> MyWaker {
+    MyWaker {
+        id,
+        thread,
+        readylist,
     }
 }
 
+fn waker_wake(s: &MyWaker) {
+    let mut readylist = s.readylist.lock().unwrap();
+    readylist.push(s.id);
+    s.thread.unpark();
+}
+
+fn waker_clone(s: &MyWaker) -> RawWaker {
+    todo!()
+}
+
+const VTABLE: RawWakerVTable = unsafe {
+        RawWakerVTable::new(
+            |s| waker_clone(&*(s as *const MyWaker)),
+            |s| waker_wake(&*(s as *const MyWaker)),
+            |_| {},
+            |_| {},
+        )
+    };
+
+fn waker_into_waker(s: &MyWaker) -> Waker {
+    let self_data: *const MyWaker = s;
+    
+    let raw_waker = RawWaker::new(self_data as *const (), &VTABLE);
+    let waker = unsafe { Waker::from_raw(raw_waker) };
+    waker
+}
 
 trait Fut {
     type Item;
