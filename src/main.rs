@@ -2,9 +2,11 @@ use std::sync::{
     mpsc::{channel, Sender},
     Arc, Mutex,
 };
-use std::task::{RawWaker, RawWakerVTable, Waker};
+use std::task::{RawWaker, RawWakerVTable, Waker, Context, Poll};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use std::future::Future;
+use std::pin::Pin;
 
 fn main() {
     let reactor = Reactor::new();
@@ -21,12 +23,15 @@ fn block_on_all(mut futures: Vec<Task>, reactor: Arc<Mutex<Reactor>>) {
     loop {
         let mut futures_to_remove = vec![];
         for (i, future) in futures.iter_mut().enumerate() {
-            match future.poll(waker_into_waker(&waker)) {
-                Async::Ready(val) => {
+            let pinned = Pin::new(future);
+            let waker = waker_into_waker(&waker);
+            let mut cx = Context::from_waker(&waker);
+            match Task::poll(pinned, &mut cx) {
+                Poll::Ready(val) => {
                     println!("Got {}", val);
                     futures_to_remove.push(i);
                 }
-                Async::Pending => (),
+                Poll::Pending => (),
             };
         }
         for i in futures_to_remove {
@@ -89,29 +94,23 @@ fn waker_into_waker(s: &MyWaker) -> Waker {
     unsafe { Waker::from_raw(raw_waker) }
 }
 
-trait Fut {
-    type Item;
-    fn poll(&mut self, waker: Waker) -> Async<Self::Item>
-    where
-        Self::Item: std::fmt::Debug;
-}
-
 impl Task {
     fn new(reactor: Arc<Mutex<Reactor>>, data: u64) -> Self {
         let id = reactor.lock().map(|mut r| r.generate_id()).unwrap();
         Task { id, reactor, data }
     }
+    
 }
 
-impl Fut for Task {
-    type Item = usize;
-    fn poll(&mut self, waker: Waker) -> Async<Self::Item> {
+impl Future for Task {
+    type Output = usize;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut r = self.reactor.lock().unwrap();
         if r.is_ready(self.id) {
-            Async::Ready(self.id)
+            Poll::Ready(self.id)
         } else {
-            r.register(self.data, waker, self.id);
-            Async::Pending
+            r.register(self.data, cx.waker().clone(), self.id);
+            Poll::Pending
         }
     }
 }
