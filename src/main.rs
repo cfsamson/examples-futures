@@ -1,19 +1,23 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    mpsc::{channel, Sender},
+    Arc, Mutex,
+};
+use std::task::{RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, JoinHandle};
-use std::task::Waker;
-use std::task::{RawWaker, RawWakerVTable};
+use std::time::Duration;
 
 fn main() {
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
     let future1 = Task::new(reactor.clone(), 1);
     let future2 = Task::new(reactor.clone(), 2);
+    let futures = vec![future1, future2];
+    block_on_all(futures, reactor);
+}
 
-    // EXECUTOR - drive futures to completion
+//// ===== EXECUTOR =====
+fn block_on_all(mut futures: Vec<Task>, reactor: Arc<Mutex<Reactor>>) {
     let waker = waker_new(thread::current());
-    let mut futures = vec![future1, future2];
     loop {
         let mut futures_to_remove = vec![];
         for (i, future) in futures.iter_mut().enumerate() {
@@ -38,9 +42,23 @@ fn main() {
     }
 }
 
+// ===== FUTURE IMPLEMENTATION =====
 #[derive(Clone)]
 struct MyWaker {
     thread: thread::Thread,
+}
+
+#[derive(Debug)]
+enum Async<T: std::fmt::Debug> {
+    Pending,
+    Ready(T),
+}
+
+#[derive(Clone)]
+pub struct Task {
+    id: usize,
+    reactor: Arc<Mutex<Reactor>>,
+    data: u64,
 }
 
 fn waker_new(thread: thread::Thread) -> MyWaker {
@@ -52,7 +70,8 @@ fn waker_wake(s: &MyWaker) {
 }
 
 fn waker_clone(s: &MyWaker) -> RawWaker {
-    todo!()
+    let s: *const MyWaker = s;
+    RawWaker::new(s as *const (), &VTABLE)
 }
 
 const VTABLE: RawWakerVTable = unsafe {
@@ -77,24 +96,9 @@ trait Fut {
         Self::Item: std::fmt::Debug;
 }
 
-#[derive(Debug)]
-enum Async<T: std::fmt::Debug> {
-    Pending,
-    Ready(T),
-}
-
-#[derive(Clone)]
-pub struct Task {
-    id: usize,
-    reactor: Arc<Mutex<Reactor>>,
-    data: u64,
-}
-
 impl Task {
     fn new(reactor: Arc<Mutex<Reactor>>, data: u64) -> Self {
-        let mut react = reactor.lock().unwrap();
-        let id = react.generate_id();
-        drop(react);
+        let id = reactor.lock().map(|mut r| r.generate_id()).unwrap();
         Task { id, reactor, data }
     }
 }
@@ -112,12 +116,17 @@ impl Fut for Task {
     }
 }
 
+// ===== REACTOR =====
 struct Reactor {
     dispatcher: Sender<Event>,
     handle: Option<JoinHandle<()>>,
-    outstanding: Arc<AtomicUsize>,
     readylist: Arc<Mutex<Vec<usize>>>,
     id_generator: usize,
+}
+
+enum Event {
+    Close,
+    Simple(Waker, u64, usize),
 }
 
 impl Reactor {
@@ -125,23 +134,17 @@ impl Reactor {
         let (tx, rx) = channel::<Event>();
         let readylist = Arc::new(Mutex::new(vec![]));
         let rl_clone = readylist.clone();
-        let outstanding = Arc::new(AtomicUsize::new(0));
-        let outstanding_clone = outstanding.clone();
         let mut handles = vec![];
         let handle = thread::spawn(move || {
             // This simulates some I/O resource
             for event in rx {
-                let outstanding = outstanding_clone.clone();
                 let rl_clone = rl_clone.clone();
                 match event {
                     Event::Close => break,
                     Event::Simple(waker, duration, id) => {
                         let event_handle = thread::spawn(move || {
-                            thread::sleep(std::time::Duration::from_secs(duration));
-                            outstanding.fetch_sub(1, Ordering::Relaxed);
-                            let mut rl_clone_locked = rl_clone.lock().unwrap();
-                            rl_clone_locked.push(id);
-                            drop(rl_clone_locked);
+                            thread::sleep(Duration::from_secs(duration));
+                            rl_clone.lock().map(|mut rl| rl.push(id)).unwrap();
                             waker.wake();
                         });
 
@@ -159,7 +162,6 @@ impl Reactor {
             readylist,
             dispatcher: tx,
             handle: Some(handle),
-            outstanding,
             id_generator: 0,
         }
     }
@@ -168,7 +170,6 @@ impl Reactor {
         self.dispatcher
             .send(Event::Simple(waker, duration, data))
             .unwrap();
-        self.outstanding.fetch_add(1, Ordering::Relaxed);
     }
 
     fn close(&mut self) {
@@ -176,8 +177,10 @@ impl Reactor {
     }
 
     fn is_ready(&self, id_to_check: usize) -> bool {
-        let readylist_locked = self.readylist.lock().unwrap();
-        readylist_locked.iter().any(|id| *id == id_to_check)
+        self.readylist
+            .lock()
+            .map(|rl| rl.iter().any(|id| *id == id_to_check))
+            .unwrap()
     }
 
     fn generate_id(&mut self) -> usize {
@@ -191,9 +194,4 @@ impl Drop for Reactor {
         let handle = self.handle.take().unwrap();
         handle.join().unwrap();
     }
-}
-
-enum Event {
-    Close,
-    Simple(Waker, u64, usize),
 }
