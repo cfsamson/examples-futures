@@ -7,14 +7,39 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::future::Future;
 use std::pin::Pin;
+use tokio::runtime::Runtime;
 
 fn main() {
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
-    let future1 = Task::new(reactor.clone(), 1);
-    let future2 = Task::new(reactor.clone(), 2);
-    let futures = vec![future1, future2];
-    block_on_all(futures, reactor);
+    let future1 = Task::new(reactor.clone(), 4);
+    let future2 = Task::new(reactor.clone(), 5);
+    //let futures = vec![future1, future2];
+
+    let fut1 = async {
+        println!("Tokio got: {}", future1.await);  
+    };
+
+    let fut2 = async {
+        println!("Tokio got: {}", future2.await);
+    };
+
+    let masterfut = async {
+        let handle1 = tokio::spawn(fut1);
+        let handle2 = tokio::spawn(fut2);
+
+        handle1.await.unwrap();
+        handle2.await.unwrap();
+    };
+     
+    let mut rt = Runtime::new().unwrap();
+    rt.block_on(masterfut);
+    // println!("Tokio got: {}", val1);
+    // let val2 = rt.block_on(future2);
+    // println!("Tokio get: {}", val2);
+
+    reactor.lock().map(|mut r| r.close()).unwrap();
+    //block_on_all(futures, reactor);
 }
 
 //// ===== EXECUTOR =====
