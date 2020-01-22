@@ -1,75 +1,49 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{
     mpsc::{channel, Sender},
     Arc, Mutex,
 };
-use std::task::{RawWaker, RawWakerVTable, Waker, Context, Poll};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use std::future::Future;
-use std::pin::Pin;
-use tokio::runtime::Runtime;
 
 fn main() {
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
-    let future1 = Task::new(reactor.clone(), 4);
-    let future2 = Task::new(reactor.clone(), 5);
-    //let futures = vec![future1, future2];
+    let future1 = Task::new(reactor.clone(), 3, 1);
+    let future2 = Task::new(reactor.clone(), 2, 2);
 
     let fut1 = async {
-        println!("Tokio got: {}", future1.await);  
+        println!("Future got: {}", future1.await);
     };
 
     let fut2 = async {
-        println!("Tokio got: {}", future2.await);
+        println!("Future got: {}", future2.await);
     };
 
-    let masterfut = async {
-        let handle1 = tokio::spawn(fut1);
-        let handle2 = tokio::spawn(fut2);
-
-        handle1.await.unwrap();
-        handle2.await.unwrap();
+    let mainfut = async {
+        fut1.await;
+        fut2.await;
     };
-     
-    let mut rt = Runtime::new().unwrap();
-    rt.block_on(masterfut);
-    // println!("Tokio got: {}", val1);
-    // let val2 = rt.block_on(future2);
-    // println!("Tokio get: {}", val2);
 
+    block_on(mainfut);
     reactor.lock().map(|mut r| r.close()).unwrap();
-    //block_on_all(futures, reactor);
 }
 
 //// ===== EXECUTOR =====
-fn block_on_all(mut futures: Vec<Task>, reactor: Arc<Mutex<Reactor>>) {
+fn block_on<F: Future>(mut future: F) -> F::Output {
     let waker = waker_new(thread::current());
-    loop {
-        let mut futures_to_remove = vec![];
-        for (i, future) in futures.iter_mut().enumerate() {
-            let pinned = Pin::new(future);
-            let waker = waker_into_waker(&waker);
-            let mut cx = Context::from_waker(&waker);
-            match Task::poll(pinned, &mut cx) {
-                Poll::Ready(val) => {
-                    println!("Got {}", val);
-                    futures_to_remove.push(i);
-                }
-                Poll::Pending => (),
-            };
-        }
-        for i in futures_to_remove {
-            futures.remove(i);
-        }
-        if futures.is_empty() {
-            let mut reactor_locked = reactor.lock().unwrap();
-            reactor_locked.close();
-            break;
-        }
-
-        thread::park();
-    }
+    let waker = waker_into_waker(&waker);
+    let mut cx = Context::from_waker(&waker);
+    let val = loop {
+        let pinned = unsafe { Pin::new_unchecked(&mut future) };
+        match Future::poll(pinned, &mut cx) {
+            Poll::Ready(val) => break val,
+            Poll::Pending => thread::park(),
+        };
+    };
+    val
 }
 
 // ===== FUTURE IMPLEMENTATION =====
@@ -78,17 +52,12 @@ struct MyWaker {
     thread: thread::Thread,
 }
 
-#[derive(Debug)]
-enum Async<T: std::fmt::Debug> {
-    Pending,
-    Ready(T),
-}
-
 #[derive(Clone)]
 pub struct Task {
     id: usize,
     reactor: Arc<Mutex<Reactor>>,
     data: u64,
+    is_registered: bool,
 }
 
 fn waker_new(thread: thread::Thread) -> MyWaker {
@@ -120,21 +89,28 @@ fn waker_into_waker(s: &MyWaker) -> Waker {
 }
 
 impl Task {
-    fn new(reactor: Arc<Mutex<Reactor>>, data: u64) -> Self {
-        let id = reactor.lock().map(|mut r| r.generate_id()).unwrap();
-        Task { id, reactor, data }
+    fn new(reactor: Arc<Mutex<Reactor>>, data: u64, id: usize) -> Self {
+        Task {
+            id,
+            reactor,
+            data,
+            is_registered: false,
+        }
     }
-    
 }
 
 impl Future for Task {
     type Output = usize;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut r = self.reactor.lock().unwrap();
         if r.is_ready(self.id) {
             Poll::Ready(self.id)
+        } else if self.is_registered {
+            Poll::Pending
         } else {
             r.register(self.data, cx.waker().clone(), self.id);
+            drop(r);
+            self.is_registered = true;
             Poll::Pending
         }
     }
@@ -145,9 +121,8 @@ struct Reactor {
     dispatcher: Sender<Event>,
     handle: Option<JoinHandle<()>>,
     readylist: Arc<Mutex<Vec<usize>>>,
-    id_generator: usize,
 }
-
+#[derive(Debug)]
 enum Event {
     Close,
     Simple(Waker, u64, usize),
@@ -186,7 +161,6 @@ impl Reactor {
             readylist,
             dispatcher: tx,
             handle: Some(handle),
-            id_generator: 0,
         }
     }
 
@@ -205,11 +179,6 @@ impl Reactor {
             .lock()
             .map(|rl| rl.iter().any(|id| *id == id_to_check))
             .unwrap()
-    }
-
-    fn generate_id(&mut self) -> usize {
-        self.id_generator += 1;
-        self.id_generator
     }
 }
 
