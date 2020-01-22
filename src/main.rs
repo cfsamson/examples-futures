@@ -8,6 +8,8 @@ use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use async_std::task;
+
 fn main() {
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
@@ -27,7 +29,7 @@ fn main() {
         fut2.await;
     };
 
-    block_on(mainfut);
+    task::block_on(mainfut);
     reactor.lock().map(|mut r| r.close()).unwrap();
 }
 
