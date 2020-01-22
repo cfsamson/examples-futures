@@ -10,10 +10,10 @@ fn main() {
     let rl = Arc::new(Mutex::new(vec![]));
     let mut reactor = Reactor::new();
     let waker = waker_new(1, thread::current(), rl.clone());
-    reactor.register(2, waker_into_waker(&waker));
+    reactor.register(3, waker_into_waker(&waker));
 
     let waker = waker_new(2, thread::current(), rl.clone());
-    reactor.register(1, waker_into_waker(&waker));
+    reactor.register(2, waker_into_waker(&waker));
     reactor.close();
 
     loop {
@@ -72,36 +72,10 @@ fn waker_into_waker(s: &MyWaker) -> Waker {
     waker
 }
 
-trait Fut {
-    type Item;
-    type Error;
-    fn poll(&mut self) -> Result<Aync<Self::Item>, Self::Error>;
-}
-
-enum Aync<T> {
-    NotReady,
-    Ready(T),
-}
 
 #[derive(Clone)]
 pub struct Task {
     id: usize,
-    unpark: SomeThingThatWakesUpTask,
-}
-
-impl Task {
-    fn unpark(&self) {
-        self.unpark.notify();
-    }
-}
-
-#[derive(Clone)]
-struct SomeThingThatWakesUpTask {}
-
-impl SomeThingThatWakesUpTask {
-    pub fn notify(&self) {
-        todo!()
-    }
 }
 
 struct Reactor {
