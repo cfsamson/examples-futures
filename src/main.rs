@@ -13,8 +13,8 @@ use async_std::task;
 fn main() {
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
-    let future1 = Task::new(reactor.clone(), 3, 1);
-    let future2 = Task::new(reactor.clone(), 2, 2);
+    let future1 = Task::new(reactor.clone(), 1, 1);
+    let future2 = Task::new(reactor.clone(), 3, 2);
 
     let fut1 = async {
         println!("Future got: {}", future1.await);
@@ -37,12 +37,10 @@ fn main() {
 
 //// ===== EXECUTOR =====
 fn block_on<F: Future>(mut future: F) -> F::Output {
-    println!("here");
-    let waker = waker_new(thread::current(), true);
-    let waker = waker_into_waker(&waker);
+    let waker = waker_new(thread::current());
+    let waker = waker_into_waker(Arc::into_raw(waker));
     let mut cx = Context::from_waker(&waker);
     let val = loop {
-        
         let pinned = unsafe { Pin::new_unchecked(&mut future) };
         match Future::poll(pinned, &mut cx) {
             Poll::Ready(val) => break val,
@@ -52,46 +50,24 @@ fn block_on<F: Future>(mut future: F) -> F::Output {
     val
 }
 
-// Poll it once, set the process in motion. The waker we pass in, can instead of
-// waking the thread
-
-// it can return a handle which parks the thread next time it's polled
-
-// The next waker doesn't do anything but waits for the reactor to get a ready
-// value or returns immidiately!
-
 fn spawn<F: Future>(future: F) -> Pin<Box<F>> {
-    let waker = waker_new(thread::current(), false); // new waker, doesn't wake thread
-    let waker = waker_into_waker(&waker); // same
+    let waker = waker_new(thread::current()); // new waker, doesn't wake thread
+    let waker = waker_into_waker(Arc::into_raw(waker)); // same
     let mut cx = Context::from_waker(&waker); // same
         // it's ok, we don't hold on to anything here
         let mut boxed = Box::pin(future);
         //let pinned = unsafe { Pin::new_unchecked(&mut future) };
-        Future::poll(boxed.as_mut(), &mut cx); // we just start the process
+        let _ = Future::poll(boxed.as_mut(), &mut cx); // we just start the process
         //let handle = Handle(future);
         //returns a handle
         boxed
-    // Handle can be polled blocking the next time
+        // Handle can be polled blocking the next time
 }
-
-// struct Handle<T: Future >(T);
-// impl<T: Future> Future for Handle<T> 
-// {
-//     type Output = T::Output;
-//     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-//        let pinned = unsafe { Pin::new_unchecked(&mut self) };
-//         match Future::poll(pinned, &mut cx) {
-//             Poll::Pending => Poll::Pending,
-//             Poll::Ready(val) => Poll::Ready(val),
-//         }
-//     }
-// }
 
 // ===== FUTURE IMPLEMENTATION =====
 #[derive(Clone)]
 struct MyWaker {
     thread: thread::Thread,
-    wakeup: bool,
 }
 
 #[derive(Clone)]
@@ -102,19 +78,21 @@ pub struct Task {
     is_registered: bool,
 }
 
-fn waker_new(thread: thread::Thread, wakeup: bool) -> MyWaker {
-    MyWaker { thread, wakeup }
+fn waker_new(thread: thread::Thread) -> Arc<MyWaker> {
+    Arc::new(MyWaker { thread })
 }
 
 fn waker_wake(s: &MyWaker) {
-    if s.wakeup {
-        s.thread.unpark();
-    }
+    let waker_ptr: *const MyWaker = s;
+    let waker_arc = unsafe {Arc::from_raw(waker_ptr)};
+        waker_arc.thread.unpark();
 }
 
 fn waker_clone(s: &MyWaker) -> RawWaker {
-    let s: *const MyWaker = s;
-    RawWaker::new(s as *const (), &VTABLE)
+    //let s: *const MyWaker = s;
+    let arc = unsafe { Arc::from_raw(s).clone() };
+    let ref_counted: *const MyWaker = Arc::into_raw(arc);
+    RawWaker::new(ref_counted as *const (), &VTABLE)
 }
 
 const VTABLE: RawWakerVTable = unsafe {
@@ -126,9 +104,9 @@ const VTABLE: RawWakerVTable = unsafe {
     )
 };
 
-fn waker_into_waker(s: &MyWaker) -> Waker {
-    let self_data: *const MyWaker = s;
-    let raw_waker = RawWaker::new(self_data as *const (), &VTABLE);
+fn waker_into_waker(s: *const MyWaker) -> Waker {
+    // let self_data: *const MyWaker = s;
+    let raw_waker = RawWaker::new(s as *const (), &VTABLE);
     unsafe { Waker::from_raw(raw_waker) }
 }
 
