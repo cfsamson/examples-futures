@@ -1,64 +1,27 @@
-fn main() {
-    let mut data = Data::new(3, 2);
-    let vtable = vec![
-        0,            // pointer to `Drop`
-        6,            // Lenght of vtable
-        8,            // alignment
-        add as usize, // function
-        sub as usize, // function
-        mul as usize, // function
-    ];
-
-    let fat_pointer = FatPointer::new(&mut data, vtable.as_ptr());
-
-    // we coherce the reference to FatPointer to a pointer to a FatPointer which we can then re-cast
-    let fat_pointer_ptr: *const FatPointer = &fat_pointer;
-    // we then cast the pointer to our FatPointer as a pointer to a pointer to a Trait object
-    // (remember that FatPointer struct is a representation of the pointer to our trait object
-    // since it contains two pointers in the form of references to the data + vtable)
-    let trait_ptr: *const *const dyn Test = fat_pointer_ptr as *const *const dyn Test;
-    // dereference the trait object fully (and take a reference to it instead)
-    let test: &dyn Test = unsafe { &**trait_ptr };
-
-    // And voalá it's now a trait object we can call methods on
-    println!("Add: {}", test.add());
-    println!("Sub: {}", test.sub());
-    println!("Mul: {}", test.mul());
-
-    // A simpler way to convert it is this
-    // 
-    // println!("ADD: {}", test.add());
-}
-
+// A reference to a trait object is a fat pointer (data_ptr, vtable_ptr)
 trait Test {
     fn add(&self) -> i32;
     fn sub(&self) -> i32;
     fn mul(&self) -> i32;
 }
 
+// This will represent our home brewn fat pointer to a trait object
 #[repr(C)]
 struct FatPointer<'a> {
+    // A reference is a pointer to an instantiated Data instance
     data: &'a mut Data,
+    /// Since we need to pass in literal values like length and alignment it's
+    /// easiest for us to convert pointers to usize-integers instead of the other way around.
     vtable: *const usize,
 }
 
-impl<'a> FatPointer<'a> {
-    fn new(data: &'a mut Data, vtable: *const usize) -> Self {
-        FatPointer { data, vtable }
-    }
-}
-
+// This is the data in our trait object, two numbers we want to operate on
 struct Data {
     a: i32,
     b: i32,
 }
 
-impl Data {
-    fn new(a: i32, b: i32) -> Self {
-        Data { a, b }
-    }
-}
-
+// ====== function definitions ======
 fn add(s: &Data) -> i32 {
     s.a + s.b
 }
@@ -67,4 +30,29 @@ fn sub(s: &Data) -> i32 {
 }
 fn mul(s: &Data) -> i32 {
     s.a * s.b
+}
+
+fn main() {
+    let mut data = Data {a: 3, b: 2};
+    // vtable is like special purpose array of pointer-length types with a fixed
+    // format where the three first values has a special meaning like the
+    // length of the array is encoded in the array itself as the second value.
+    let vtable = vec![
+        0,            // pointer to `Drop` which we won't use
+        6,            // Lenght of vtable
+        8,            // alignment
+        // we need to make sure we add these in the same order as defined in the Trait.
+        // Try changing the order add and sub and see what happens
+        add as usize, // function pointer
+        sub as usize, // function pointer 
+        mul as usize, // function pointer
+    ];
+
+    let fat_pointer = FatPointer { data: &mut data, vtable: vtable.as_ptr()};
+    let test = unsafe { std::mem::transmute::<FatPointer, &dyn Test>(fat_pointer) };
+
+    // And voalá, it's now a trait object we can call methods on
+    println!("Add: {}", test.add());
+    println!("Sub: {}", test.sub());
+    println!("Mul: {}", test.mul());
 }
