@@ -10,6 +10,8 @@ WIP for now, the different seps we go through are put in separate branches:
 - `05_final`: Make some minor adjustments so our `Futures` can be run on both `async_std` and `tokio`. **Rename branch to `06_xx`.**
 - `06_bonus`: I think this is the same as `06_final` keeping it to be sure
 - `07_bonus_spawn`: Take on the challanging task of implementing a `spawn` method. Talk about "blocking" in async blocks.
+- `vtable`: Example of a fat pointer. We create a Trait object from raw parts implementing our own vtable and data.
+
 
 Each step has small changes where we go from a very simple home brewed implementaiton to implementing
 our own `Futures` which can be run on both `async_std` and `tokio` runtimes.
