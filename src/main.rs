@@ -1,5 +1,5 @@
 fn main() {
-    let mut data = Data::new(2, 3);
+    let mut data = Data::new(3, 2);
     let vtable = vec![
         0,            // pointer to `Drop`
         6,            // Lenght of vtable
@@ -11,19 +11,22 @@ fn main() {
 
     let fat_pointer = FatPointer::new(&mut data, vtable.as_ptr());
 
-    // we coherce the reference to FatPointer as a pointer
+    // we coherce the reference to FatPointer to a pointer to a FatPointer which we can then re-cast
     let fat_pointer_ptr: *const FatPointer = &fat_pointer;
     // we then cast the pointer to our FatPointer as a pointer to a pointer to a Trait object
-    // remember that FatPointer is the pointer to our trait object
+    // (remember that FatPointer struct is a representation of the pointer to our trait object
+    // since it contains two pointers in the form of references to the data + vtable)
     let trait_ptr: *const *const dyn Test = fat_pointer_ptr as *const *const dyn Test;
-    // dereference the traot object (and take a reference to it instead)
+    // dereference the trait object fully (and take a reference to it instead)
     let test: &dyn Test = unsafe { &**trait_ptr };
+
+    // And voalá it's now a trait object we can call methods on
     println!("Add: {}", test.add());
     println!("Sub: {}", test.sub());
     println!("Mul: {}", test.mul());
 
-    // Or this can be simpler
-    // let test = unsafe { std::mem::transmute::<FatPointer, &dyn Test>(fat_pointer) };
+    // A simpler way to convert it is this
+    // 
     // println!("ADD: {}", test.add());
 }
 
