@@ -33,8 +33,8 @@ fn main() {
 
 //// ===== EXECUTOR =====
 fn block_on<F: Future>(mut future: F) -> F::Output {
-    let waker = waker_new(thread::current());
-    let waker = waker_into_waker(Arc::into_raw(waker));
+    let mywaker = mywaker_new(thread::current());
+    let waker = mywaker_into_waker(Arc::into_raw(mywaker));
     let mut cx = Context::from_waker(&waker);
     let val = loop {
         let pinned = unsafe { Pin::new_unchecked(&mut future) };
@@ -47,8 +47,8 @@ fn block_on<F: Future>(mut future: F) -> F::Output {
 }
 
 fn spawn<F: Future>(future: F) -> Pin<Box<F>> {
-    let waker = waker_new(thread::current()); 
-    let waker = waker_into_waker(Arc::into_raw(waker));
+    let mywaker = mywaker_new(thread::current()); 
+    let waker = mywaker_into_waker(Arc::into_raw(mywaker));
     let mut cx = Context::from_waker(&waker); 
     let mut boxed = Box::pin(future);
     let _ = Future::poll(boxed.as_mut(), &mut cx); 
@@ -69,17 +69,17 @@ pub struct Task {
     is_registered: bool,
 }
 
-fn waker_new(thread: thread::Thread) -> Arc<MyWaker> {
+fn mywaker_new(thread: thread::Thread) -> Arc<MyWaker> {
     Arc::new(MyWaker { thread })
 }
 
-fn waker_wake(s: &MyWaker) {
+fn mywaker_wake(s: &MyWaker) {
     let waker_ptr: *const MyWaker = s;
     let waker_arc = unsafe {Arc::from_raw(waker_ptr)};
     waker_arc.thread.unpark();
 }
 
-fn waker_clone(s: &MyWaker) -> RawWaker {
+fn mywaker_clone(s: &MyWaker) -> RawWaker {
     let arc = unsafe { Arc::from_raw(s) };
     let ref_counted: *const MyWaker = Arc::into_raw(arc);
     RawWaker::new(ref_counted as *const (), &VTABLE)
@@ -87,14 +87,14 @@ fn waker_clone(s: &MyWaker) -> RawWaker {
 
 const VTABLE: RawWakerVTable = unsafe {
     RawWakerVTable::new(
-        |s| waker_clone(&*(s as *const MyWaker)),
-        |s| waker_wake(&*(s as *const MyWaker)),
+        |s| mywaker_clone(&*(s as *const MyWaker)),
+        |s| mywaker_wake(&*(s as *const MyWaker)),
         |_| {},
         |_| {},
     )
 };
 
-fn waker_into_waker(s: *const MyWaker) -> Waker {
+fn mywaker_into_waker(s: *const MyWaker) -> Waker {
     let raw_waker = RawWaker::new(s as *const (), &VTABLE);
     unsafe { Waker::from_raw(raw_waker) }
 }
@@ -195,6 +195,6 @@ impl Reactor {
 
 impl Drop for Reactor {
     fn drop(&mut self) {
-        let handle = self.handle.take().map(|h| h.join()).unwrap();
+        self.handle.take().map(|h| h.join().unwrap()).unwrap();
     }
 }
