@@ -39,7 +39,7 @@ fn main() {
     // length of the array is encoded in the array itself as the second value.
     let vtable = vec![
         0,            // pointer to `Drop` which we don't use right now
-        6,            // Lenght of vtable
+        6,            // lenght of vtable
         8,            // alignment
         // we need to make sure we add these in the same order as defined in the Trait.
         // Try changing the order of add and sub and see what happens.
