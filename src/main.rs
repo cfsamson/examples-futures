@@ -1,148 +1,85 @@
-use std::{
-    sync::{mpsc::{channel, Sender}, atomic::{AtomicUsize, Ordering}, Arc, Mutex},
-    task::{RawWaker, RawWakerVTable, Waker},
-    thread::{self, JoinHandle}, time::{Duration, Instant}
-};
-
 fn main() {
-    let readylist = Arc::new(Mutex::new(vec![]));
-    let mut reactor = Reactor::new();
-
-    let waker = waker_new(1, thread::current(), readylist.clone());
-    reactor.register(3, waker_into_waker(&waker));
-
-    let waker = waker_new(2, thread::current(), readylist.clone());
-    reactor.register(2, waker_into_waker(&waker));
-
-    executor_run(reactor, readylist);
-}
-
-
-fn executor_run(mut reactor: Reactor, rl: Arc<Mutex<Vec<usize>>>) {
-    let start = Instant::now();
-        loop {
-        let mut rl_locked = rl.lock().unwrap();
-        while let Some(event) = rl_locked.pop() {
-            let dur = (Instant::now() - start).as_secs_f32(); 
-            println!("Event {} just happened at time: {:.2}.", event, dur);
-            reactor.outstanding.fetch_sub(1, Ordering::Relaxed);
-        }
-        drop(rl_locked);
-
-        if reactor.outstanding.load(Ordering::Relaxed) == 0 {
-            reactor.close();
-            break;
-        }
-        thread::park();
-    }
-}
-
-#[derive(Clone)]
-struct MyWaker {
-    id: usize,
-    thread: thread::Thread,
-    readylist: Arc<Mutex<Vec<usize>>>,
-}
-
-fn waker_new(id: usize, thread: thread::Thread, readylist: Arc<Mutex<Vec<usize>>>) -> MyWaker {
-    MyWaker {
-        id,
-        thread,
-        readylist,
-    }
-}
-
-fn waker_wake(s: &MyWaker) {
-    let mut readylist = s.readylist.lock().unwrap();
-    readylist.push(s.id);
-    s.thread.unpark();
-}
-
-fn waker_clone(s: &MyWaker) -> RawWaker {
-    todo!()
-}
-
-const VTABLE: RawWakerVTable = unsafe {
-        RawWakerVTable::new(
-            |s| waker_clone(&*(s as *const MyWaker)),
-            |s| waker_wake(&*(s as *const MyWaker)),
-            |_| {},
-            |_| {},
-        )
+    let mut gen = GeneratorA {
+        a1: 4,
+        state: State::Enter,
     };
 
-fn waker_into_waker(s: &MyWaker) -> Waker {
-    let self_data: *const MyWaker = s;
-    
-    let raw_waker = RawWaker::new(self_data as *const (), &VTABLE);
-    let waker = unsafe { Waker::from_raw(raw_waker) };
-    waker
+    match gen.resume() {
+        GeneratorState::Yielded(State::Yield1(n)) => {
+            println!("Got value {}", n);
+        }
+        _ => (),
+    }
+
+    match gen.resume() {
+        GeneratorState::Complete(()) => (),
+        _ => (),
+    };
+
 }
 
+// let b = |a: i32| {
+//         yield a * 2;
+//         println!("Hello!");
+//     };
+//
+// let gen = b(4);
+// let val = gen.resume();
+// println!("Got value {}", val);
+// gen.resume();
 
-#[derive(Clone)]
-pub struct Task {
-    id: usize,
+/// Will get compiled into
+
+// If you've ever wondered why the parameters are called Y and R the naming from
+// the original rfc most likely holds the answer
+enum GeneratorState<Y, R> {
+    // originally called `CoResult`
+    Yielded(Y),  // originally called `Yield(Y)`
+    Complete(R), // originally called `Return(R)`
 }
 
-struct Reactor {
-    dispatcher: Sender<Event>,
-    handle: Option<JoinHandle<()>>,
-    outstanding: Arc<AtomicUsize>,
+enum State {
+    Enter,
+    Yield1(i32),
+    Exit,
 }
 
-impl Reactor {
-    fn new() -> Self {
-        let (tx, rx) = channel::<Event>();
-        let mut handles = vec![];
-        let handle = thread::spawn(move || {
-            // This simulates some I/O resource
-            for event in rx {
-                match event {
-                    Event::Close => break,
-                    Event::Simple(waker, sleep) => {
-                        let event_handle = thread::spawn(move || {
-                            thread::sleep(Duration::from_secs(sleep));
-                            waker.wake();
-                        });
+struct GeneratorA {
+    a1: i32,
+    state: State,
+}
 
-                        handles.push(event_handle);
-                    }
-                }
+trait Generator {
+    type Yield; 
+    type Return;
+    fn resume(&mut self) -> GeneratorState<Self::Yield, Self::Return>;
+}
+
+impl Generator for GeneratorA {
+    type Yield = State;
+    type Return = ();
+    fn resume(&mut self) -> GeneratorState<Self::Yield, Self::Return> {
+        match self.state {
+            State::Enter => {
+                self.state = State::Yield1(self.a1);
+                GeneratorState::Yielded(State::Yield1(self.a1))
             }
-
-            for handle in handles {
-                handle.join().unwrap();
+            State::Yield1(_) => {
+                println!("Hello!");
+                self.state = State::Exit;
+                GeneratorState::Complete(())
             }
-        });
-
-        Reactor {
-            dispatcher: tx,
-            handle: Some(handle),
-            outstanding: Arc::new(AtomicUsize::new(0)),
+            State::Exit => {
+                panic!("Can't advance an exited generator!")
+            }
         }
     }
-
-    fn register(&mut self, duration: u64, waker: Waker) {
-        self.dispatcher
-            .send(Event::Simple(waker, duration))
-            .unwrap();
-        self.outstanding.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn close(&mut self) {
-        self.dispatcher.send(Event::Close).unwrap();
-    }
 }
 
-impl Drop for Reactor {
-    fn drop(&mut self) {
-        let handle = self.handle.take().unwrap();
-        handle.join().unwrap();
-    }
-}
-
-enum Event {
-    Close,
-    Simple(Waker, u64),
-}
+// let a = |a: i32| {
+//         let arr: Vec<i32> = (0..a).enumerate().map(|(i, _)| i).collect();
+//         for n in arr {
+//             yield n;
+//         }
+//         println!("The sum is: {}", arr.iter().sum());
+//     };
