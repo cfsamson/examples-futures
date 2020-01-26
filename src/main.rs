@@ -2,27 +2,36 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-
+use std::time::{Instant, Duration};
 use std::task::Waker;
 use std::task::{RawWaker, RawWakerVTable};
 
 fn main() {
-    let rl = Arc::new(Mutex::new(vec![]));
+    let readylist = Arc::new(Mutex::new(vec![]));
     let mut reactor = Reactor::new();
-    let waker = waker_new(1, thread::current(), rl.clone());
+    let waker = waker_new(1, thread::current(), readylist.clone());
     reactor.register(3, waker_into_waker(&waker));
 
-    let waker = waker_new(2, thread::current(), rl.clone());
+    let waker = waker_new(2, thread::current(), readylist.clone());
     reactor.register(2, waker_into_waker(&waker));
-    reactor.close();
 
-    loop {
+    executor_run(reactor, readylist);
+}
+
+
+fn executor_run(mut reactor: Reactor, rl: Arc<Mutex<Vec<usize>>>) {
+    let start = Instant::now();
+        loop {
         let mut rl_locked = rl.lock().unwrap();
         while let Some(event) = rl_locked.pop() {
-            println!("Event {} just happened.", event);
+            let dur = (Instant::now() - start).as_secs_f32(); 
+            println!("Event {} just happened at time: {:.2}.", event, dur);
+            reactor.outstanding.fetch_sub(1, Ordering::Relaxed);
         }
         drop(rl_locked);
-        if reactor.outstanding() == 0 {
+
+        if reactor.outstanding.load(Ordering::Relaxed) == 0 {
+            reactor.close();
             break;
         }
 
@@ -98,7 +107,7 @@ impl Reactor {
                     Event::Close => break,
                     Event::Simple(waker, sleep) => {
                         let event_handle = thread::spawn(move || {
-                            thread::sleep(std::time::Duration::from_secs(sleep));
+                            thread::sleep(Duration::from_secs(sleep));
                             outstanding.fetch_sub(1, Ordering::Relaxed);
                             waker.wake();
                         });
@@ -129,10 +138,6 @@ impl Reactor {
 
     fn close(&mut self) {
         self.dispatcher.send(Event::Close).unwrap();
-    }
-
-    fn outstanding(&self) -> usize {
-        self.outstanding.load(Ordering::Relaxed)
     }
 }
 
