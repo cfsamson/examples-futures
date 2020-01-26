@@ -1,27 +1,26 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{
-    mpsc::{channel, Sender},
-    Arc, Mutex,
+use std::{
+    future::Future, pin::Pin, sync::{mpsc::{channel, Sender}, Arc, Mutex},
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+    thread::{self, JoinHandle}, time::{Duration, Instant}
 };
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-
-use async_std::task;
 
 fn main() {
+    let start = Instant::now();
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
-    let future1 = Task::new(reactor.clone(), 1, 1);
-    let future2 = Task::new(reactor.clone(), 3, 2);
+    let future1 = Task::new(reactor.clone(), 3, 1);
+    let future2 = Task::new(reactor.clone(), 1, 2);
 
     let fut1 = async {
-        println!("Future got: {}", future1.await);
+        let val = future1.await;
+        let dur = (Instant::now() - start).as_secs_f32();
+        println!("Future got {} at time: {:.2}.", val, dur);
     };
 
     let fut2 = async {
-        println!("Future got: {}", future2.await);
+        let val = future2.await;
+        let dur = (Instant::now() - start).as_secs_f32();
+        println!("Future got {} at time: {:.2}.", val, dur);
     };
 
     let mainfut = async {
@@ -37,7 +36,7 @@ fn main() {
 
 //// ===== EXECUTOR =====
 fn block_on<F: Future>(mut future: F) -> F::Output {
-    let waker = waker_new(thread::current());
+    let waker = Arc::new(MyWaker{ thread: thread::current() }); 
     let waker = waker_into_waker(Arc::into_raw(waker));
     let mut cx = Context::from_waker(&waker);
     let val = loop {
@@ -51,17 +50,12 @@ fn block_on<F: Future>(mut future: F) -> F::Output {
 }
 
 fn spawn<F: Future>(future: F) -> Pin<Box<F>> {
-    let waker = waker_new(thread::current()); // new waker, doesn't wake thread
-    let waker = waker_into_waker(Arc::into_raw(waker)); // same
-    let mut cx = Context::from_waker(&waker); // same
-        // it's ok, we don't hold on to anything here
+    let waker = Arc::new(MyWaker{ thread: thread::current() }); 
+    let waker = waker_into_waker(Arc::into_raw(waker)); 
+    let mut cx = Context::from_waker(&waker); 
         let mut boxed = Box::pin(future);
-        //let pinned = unsafe { Pin::new_unchecked(&mut future) };
-        let _ = Future::poll(boxed.as_mut(), &mut cx); // we just start the process
-        //let handle = Handle(future);
-        //returns a handle
+        let _ = Future::poll(boxed.as_mut(), &mut cx); 
         boxed
-        // Handle can be polled blocking the next time
 }
 
 // ===== FUTURE IMPLEMENTATION =====
@@ -78,10 +72,6 @@ pub struct Task {
     is_registered: bool,
 }
 
-fn waker_new(thread: thread::Thread) -> Arc<MyWaker> {
-    Arc::new(MyWaker { thread })
-}
-
 fn waker_wake(s: &MyWaker) {
     let waker_ptr: *const MyWaker = s;
     let waker_arc = unsafe {Arc::from_raw(waker_ptr)};
@@ -89,23 +79,21 @@ fn waker_wake(s: &MyWaker) {
 }
 
 fn waker_clone(s: &MyWaker) -> RawWaker {
-    //let s: *const MyWaker = s;
     let arc = unsafe { Arc::from_raw(s).clone() };
-    let ref_counted: *const MyWaker = Arc::into_raw(arc);
-    RawWaker::new(ref_counted as *const (), &VTABLE)
+    std::mem::forget(arc.clone()); // increase ref count
+    RawWaker::new(Arc::into_raw(arc) as *const (), &VTABLE)
 }
 
 const VTABLE: RawWakerVTable = unsafe {
     RawWakerVTable::new(
-        |s| waker_clone(&*(s as *const MyWaker)),
-        |s| waker_wake(&*(s as *const MyWaker)),
-        |_| {},
-        |_| {},
+        |s| waker_clone(&*(s as *const MyWaker)),     // clone
+        |s| waker_wake(&*(s as *const MyWaker)),      // wake
+        |s| waker_wake(*(s as *const &MyWaker)),      // wake by ref
+        |s| drop(Arc::from_raw(s as *const MyWaker)), // decrease refcount
     )
 };
 
 fn waker_into_waker(s: *const MyWaker) -> Waker {
-    // let self_data: *const MyWaker = s;
     let raw_waker = RawWaker::new(s as *const (), &VTABLE);
     unsafe { Waker::from_raw(raw_waker) }
 }
