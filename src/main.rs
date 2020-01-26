@@ -36,8 +36,8 @@ fn main() {
 
 //// ===== EXECUTOR =====
 fn block_on<F: Future>(mut future: F) -> F::Output {
-    let waker = Arc::new(MyWaker{ thread: thread::current() }); 
-    let waker = waker_into_waker(Arc::into_raw(waker));
+    let mywaker = Arc::new(MyWaker{ thread: thread::current() }); 
+    let waker = waker_into_waker(Arc::into_raw(mywaker));
     let mut cx = Context::from_waker(&waker);
     let val = loop {
         let pinned = unsafe { Pin::new_unchecked(&mut future) };
@@ -50,12 +50,12 @@ fn block_on<F: Future>(mut future: F) -> F::Output {
 }
 
 fn spawn<F: Future>(future: F) -> Pin<Box<F>> {
-    let waker = Arc::new(MyWaker{ thread: thread::current() }); 
-    let waker = waker_into_waker(Arc::into_raw(waker)); 
+    let mywaker = Arc::new(MyWaker{ thread: thread::current() }); 
+    let waker = waker_into_waker(Arc::into_raw(mywaker)); 
     let mut cx = Context::from_waker(&waker); 
-        let mut boxed = Box::pin(future);
-        let _ = Future::poll(boxed.as_mut(), &mut cx); 
-        boxed
+    let mut boxed = Box::pin(future);
+    let _ = Future::poll(boxed.as_mut(), &mut cx); 
+    boxed
 }
 
 // ===== FUTURE IMPLEMENTATION =====
@@ -72,13 +72,13 @@ pub struct Task {
     is_registered: bool,
 }
 
-fn waker_wake(s: &MyWaker) {
+fn mywaker_wake(s: &MyWaker) {
     let waker_ptr: *const MyWaker = s;
     let waker_arc = unsafe {Arc::from_raw(waker_ptr)};
-        waker_arc.thread.unpark();
+    waker_arc.thread.unpark();
 }
 
-fn waker_clone(s: &MyWaker) -> RawWaker {
+fn mywaker_clone(s: &MyWaker) -> RawWaker {
     let arc = unsafe { Arc::from_raw(s).clone() };
     std::mem::forget(arc.clone()); // increase ref count
     RawWaker::new(Arc::into_raw(arc) as *const (), &VTABLE)
@@ -86,10 +86,10 @@ fn waker_clone(s: &MyWaker) -> RawWaker {
 
 const VTABLE: RawWakerVTable = unsafe {
     RawWakerVTable::new(
-        |s| waker_clone(&*(s as *const MyWaker)),     // clone
-        |s| waker_wake(&*(s as *const MyWaker)),      // wake
-        |s| waker_wake(*(s as *const &MyWaker)),      // wake by ref
-        |s| drop(Arc::from_raw(s as *const MyWaker)), // decrease refcount
+        |s| mywaker_clone(&*(s as *const MyWaker)),     // clone
+        |s| mywaker_wake(&*(s as *const MyWaker)),      // wake
+        |s| mywaker_wake(*(s as *const &MyWaker)),      // wake by ref
+        |s| drop(Arc::from_raw(s as *const MyWaker)),   // decrease refcount
     )
 };
 
@@ -194,7 +194,6 @@ impl Reactor {
 
 impl Drop for Reactor {
     fn drop(&mut self) {
-        let handle = self.handle.take().unwrap();
-        handle.join().unwrap();
+        self.handle.take().map(|h| h.join().unwrap()).unwrap();
     }
 }
