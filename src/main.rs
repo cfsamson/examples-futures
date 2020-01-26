@@ -33,7 +33,6 @@ fn executor_run(mut reactor: Reactor, rl: Arc<Mutex<Vec<usize>>>) {
             reactor.close();
             break;
         }
-
         thread::park();
     }
 }
@@ -95,19 +94,15 @@ struct Reactor {
 impl Reactor {
     fn new() -> Self {
         let (tx, rx) = channel::<Event>();
-        let outstanding = Arc::new(AtomicUsize::new(0));
-        let outstanding_clone = outstanding.clone();
         let mut handles = vec![];
         let handle = thread::spawn(move || {
             // This simulates some I/O resource
             for event in rx {
-                let outstanding = outstanding_clone.clone();
                 match event {
                     Event::Close => break,
                     Event::Simple(waker, sleep) => {
                         let event_handle = thread::spawn(move || {
                             thread::sleep(Duration::from_secs(sleep));
-                            outstanding.fetch_sub(1, Ordering::Relaxed);
                             waker.wake();
                         });
 
@@ -124,7 +119,7 @@ impl Reactor {
         Reactor {
             dispatcher: tx,
             handle: Some(handle),
-            outstanding,
+            outstanding: Arc::new(AtomicUsize::new(0)),
         }
     }
 
