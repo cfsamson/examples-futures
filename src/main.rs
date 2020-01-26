@@ -1,14 +1,13 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Instant, Duration};
-use std::task::Waker;
-use std::task::{RawWaker, RawWakerVTable};
+use std::{
+    sync::{mpsc::{channel, Sender}, atomic::{AtomicUsize, Ordering}, Arc, Mutex},
+    task::{RawWaker, RawWakerVTable, Waker},
+    thread::{self, JoinHandle}, time::{Duration, Instant}
+};
 
 fn main() {
     let readylist = Arc::new(Mutex::new(vec![]));
     let mut reactor = Reactor::new();
+
     let waker = waker_new(1, thread::current(), readylist.clone());
     reactor.register(3, waker_into_waker(&waker));
 
