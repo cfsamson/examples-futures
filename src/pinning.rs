@@ -1,11 +1,7 @@
-mod pinning;
-
 fn main() {
-    let mut gen = GeneratorA {
-        a1: 4,
-        state: State::Enter,
-    };
+    let mut gen = GeneratorA::Enter;
 
+    
     match gen.resume() {
         GeneratorState::Yielded(State::Yield1(n)) => {
             println!("Got value {}", n);
@@ -20,9 +16,11 @@ fn main() {
 
 }
 
-// let b = |a: i32| {
-//         yield a * 2;
-//         println!("Hello!");
+// let b = || {
+//         let a = String::from("Hello");---|
+//         println!("{}", &a):              |
+//         yield &a;                     |-- borrow across yield point  
+//         println!("{} world!", &a); ------|
 //     };
 //
 // let gen = b(4);
@@ -42,12 +40,13 @@ enum GeneratorState<Y, R> {
 
 enum State {
     Enter,
-    Yield1(i32),
+    Yield1,
     Exit,
 }
 
-struct GeneratorA {
-    a1: i32,
+struct GeneratorA<'a> {
+    local_a: String,
+    local_b: &'a str,
     state: State,
 }
 
@@ -57,17 +56,21 @@ trait Generator {
     fn resume(&mut self) -> GeneratorState<Self::Yield, Self::Return>;
 }
 
-impl Generator for GeneratorA {
-    type Yield = State;
+impl<'a> Generator for GeneratorA<'a> {
+    type Yield = &'a str;
     type Return = ();
     fn resume(&mut self) -> GeneratorState<Self::Yield, Self::Return> {
         match self.state {
             State::Enter => {
-                self.state = State::Yield1(self.a1);
-                GeneratorState::Yielded(State::Yield1(self.a1))
+                let local_a = String::from("Hello world");
+                self.local_a = local_a;
+                let b = &self.local_a[0..5];
+                self.state = State::Yield1;
+                GeneratorState::Yielded(b)
             }
-            State::Yield1(_) => {
-                println!("Hello!");
+            State::Yield1 => {
+                let local_b = self.local_b;
+                println!("Hello {}", local_b);
                 self.state = State::Exit;
                 GeneratorState::Complete(())
             }
@@ -77,11 +80,3 @@ impl Generator for GeneratorA {
         }
     }
 }
-
-// let a = |a: i32| {
-//         let arr: Vec<i32> = (0..a).enumerate().map(|(i, _)| i).collect();
-//         for n in arr {
-//             yield n;
-//         }
-//         println!("The sum is: {}", arr.iter().sum());
-//     };
