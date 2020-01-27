@@ -1,9 +1,9 @@
 fn main() {
-    let mut gen = GeneratorA::Enter;
+    let mut gen = GeneratorA::new();
 
     
     match gen.resume() {
-        GeneratorState::Yielded(State::Yield1(n)) => {
+        GeneratorState::Yielded(n) => {
             println!("Got value {}", n);
         }
         _ => (),
@@ -43,34 +43,47 @@ enum State {
     Yield1,
     Exit,
 }
-
+use std::marker::PhantomData;
+use std::ptr;
 struct GeneratorA<'a> {
-    local_a: String,
-    local_b: &'a str,
+    local_a: Vec<char>,
+    local_b: ptr::NonNull<&'a [char]>,
     state: State,
+    _marker: PhantomData<&'a [char]>,
 }
 
-trait Generator {
+impl<'a> GeneratorA<'a> {
+    fn new() -> Self {
+        GeneratorA {
+            local_a: vec![],
+            local_b: ptr::NonNull::dangling(),
+            state: State::Enter,
+            _marker: PhantomData,
+        }
+    }
+}
+
+trait Generator<'a> {
     type Yield; 
     type Return;
-    fn resume(&mut self) -> GeneratorState<Self::Yield, Self::Return>;
+    fn resume(&'a mut self) -> GeneratorState<Self::Yield, Self::Return>;
 }
 
-impl<'a> Generator for GeneratorA<'a> {
-    type Yield = &'a str;
+impl<'a> Generator<'a> for GeneratorA<'a> {
+    type Yield = &'a [char];
     type Return = ();
-    fn resume(&mut self) -> GeneratorState<Self::Yield, Self::Return> {
+    fn resume(&'a mut self) -> GeneratorState<Self::Yield, Self::Return> {
         match self.state {
             State::Enter => {
-                let local_a = String::from("Hello world");
+                let local_a = vec!['H', 'e', 'l','l','o',' ', 'w','o','r','d'];
                 self.local_a = local_a;
-                let b = &self.local_a[0..5];
+                self.local_b = ptr::NonNull::new(&mut &self.local_a[0..5]).unwrap();
                 self.state = State::Yield1;
-                GeneratorState::Yielded(b)
+                GeneratorState::Yielded(unsafe {self.local_b.as_ref()})
             }
             State::Yield1 => {
-                let local_b = self.local_b;
-                println!("Hello {}", local_b);
+                let local_b = unsafe { self.local_b.as_ref() };
+                println!("Hello {}", local_b.iter().collect::<String>());
                 self.state = State::Exit;
                 GeneratorState::Complete(())
             }
