@@ -4,11 +4,12 @@ use std::{
     thread::{self, JoinHandle}, time::{Duration, Instant}
 };
 
+
 fn main() {
     let start = Instant::now();
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
-    let future1 = Task::new(reactor.clone(), 3, 1);
+    let future1 = Task::new(reactor.clone(), 2, 1);
     let future2 = Task::new(reactor.clone(), 1, 2);
 
     let fut1 = async {
@@ -24,13 +25,20 @@ fn main() {
     };
 
     let mainfut = async {
-        let handle1 = spawn(fut1);
-        let handle2 = spawn(fut2);
-        handle1.await;
-        handle2.await;
+        fut1.await;
+        fut2.await;
     };
 
-    block_on(mainfut);
+    // Uncomment to use `async_std` executor
+    async_std::task::block_on(mainfut);
+
+    // Uncomment to use `tokio` executor
+    //let mut rt = tokio::runtime::Runtime::new().unwrap();
+    //rt.block_on(mainfut);
+
+    // Uncomment to use our own executor
+    //block_on(mainfut);
+    
     reactor.lock().map(|mut r| r.close()).unwrap();
 }
 
@@ -47,15 +55,6 @@ fn block_on<F: Future>(mut future: F) -> F::Output {
         };
     };
     val
-}
-
-fn spawn<F: Future>(future: F) -> Pin<Box<F>> {
-    let mywaker = Arc::new(MyWaker{ thread: thread::current() }); 
-    let waker = waker_into_waker(Arc::into_raw(mywaker)); 
-    let mut cx = Context::from_waker(&waker); 
-    let mut boxed = Box::pin(future);
-    let _ = Future::poll(boxed.as_mut(), &mut cx); 
-    boxed
 }
 
 // ====================== FUTURE IMPLEMENTATION ==============================
