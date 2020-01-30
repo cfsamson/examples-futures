@@ -11,7 +11,7 @@ fn main() {
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
     
-    let future1 = Task::new(reactor.clone(), 3, 1);
+    let future1 = Task::new(reactor.clone(), 2, 1);
     let future2 = Task::new(reactor.clone(), 1, 2);
 
     let fut1 = async {
@@ -27,10 +27,8 @@ fn main() {
     };
 
     let mainfut = async {
-        let handle1 = spawn(fut1);
-        let handle2 = spawn(fut2);
-        handle1.await;
-        handle2.await;
+        fut1.await;
+        fut2.await;
     };
 
     block_on(mainfut);
