@@ -6,8 +6,11 @@ use std::{
 
 fn main() {
     let start = Instant::now();
+
+    // Many runtimes create a glocal `reactor` we pass it as an argument
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
+    
     let future1 = Task::new(reactor.clone(), 3, 1);
     let future2 = Task::new(reactor.clone(), 1, 2);
 
@@ -47,15 +50,6 @@ fn block_on<F: Future>(mut future: F) -> F::Output {
         };
     };
     val
-}
-
-fn spawn<F: Future>(future: F) -> Pin<Box<F>> {
-    let mywaker = Arc::new(MyWaker{ thread: thread::current() }); 
-    let waker = waker_into_waker(Arc::into_raw(mywaker)); 
-    let mut cx = Context::from_waker(&waker); 
-    let mut boxed = Box::pin(future);
-    let _ = Future::poll(boxed.as_mut(), &mut cx); 
-    boxed
 }
 
 // ====================== FUTURE IMPLEMENTATION ==============================
