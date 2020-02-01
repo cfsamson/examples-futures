@@ -211,7 +211,7 @@ struct Reactor {
 #[derive(Debug)]
 enum Event {
     Close,
-    Simple(Waker, u64, usize),
+    Timeout(Waker, u64, usize),
 }
 
 impl Reactor {
@@ -233,7 +233,7 @@ impl Reactor {
                 match event {
                     // If we get a close event we break out of the loop we're in
                     Event::Close => break,
-                    Event::Simple(waker, duration, id) => {
+                    Event::Timeout(waker, duration, id) => {
 
                         // When we get an event we simply spawn a new thread...
                         let event_handle = thread::spawn(move || {
@@ -272,7 +272,7 @@ impl Reactor {
         // registering an event is as simple as sending an `Event` through
         // the channel.
         self.dispatcher
-            .send(Event::Simple(waker, duration, data))
+            .send(Event::Timeout(waker, duration, data))
             .unwrap();
     }
 
