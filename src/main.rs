@@ -134,7 +134,7 @@ struct Reactor {
 #[derive(Debug)]
 enum Event {
     Close,
-    Simple(Waker, u64, usize),
+    Timeout(Waker, u64, usize),
 }
 
 impl Reactor {
@@ -149,7 +149,7 @@ impl Reactor {
                 let rl_clone = rl_clone.clone();
                 match event {
                     Event::Close => break,
-                    Event::Simple(waker, duration, id) => {
+                    Event::Timeout(waker, duration, id) => {
                         let event_handle = thread::spawn(move || {
                             thread::sleep(Duration::from_secs(duration));
                             rl_clone.lock().map(|mut rl| rl.push(id)).unwrap();
@@ -175,7 +175,7 @@ impl Reactor {
 
     fn register(&mut self, duration: u64, waker: Waker, data: usize) {
         self.dispatcher
-            .send(Event::Simple(waker, duration, data))
+            .send(Event::Timeout(waker, duration, data))
             .unwrap();
     }
 
