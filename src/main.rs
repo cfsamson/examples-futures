@@ -8,8 +8,8 @@ fn main() {
     let start = Instant::now();
     let reactor = Reactor::new();
     let reactor = Arc::new(Mutex::new(reactor));
-    let future1 = Task::new(reactor.clone(), 3, 1);
-    let future2 = Task::new(reactor.clone(), 1, 2);
+    let future1 = Task::new(reactor.clone(), 1, 1);
+    let future2 = Task::new(reactor.clone(), 2, 2);
 
     let fut1 = async {
         let val = future1.await;
@@ -147,6 +147,7 @@ impl Reactor {
         let handle = thread::spawn(move || {
             // This simulates some I/O resource
             for event in rx {
+                println!("GOT EVENT: {:?}", event);
                 let rl_clone = rl_clone.clone();
                 match event {
                     Event::Close => break,
