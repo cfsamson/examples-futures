@@ -14,7 +14,6 @@ All the code and concepts are explained thoroughly in the [accompanying book](ht
 - `master`: The example code for the book. `Futures` can be run on both `async_std` and `tokio`.
 - `basic_example_commented`: The same as the `master` branch but with extensive comments explaining everything.
 - `bonus_runtimes`: A simple proof that using other executors runs our example as expected
-- `bonus_spawn`: Implemented a very short and basic `spawn` method. 
 - `vtable`: Example of a fat pointer. We create a Trait object from raw parts implementing our own vtable and data.
 
 

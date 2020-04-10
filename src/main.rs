@@ -1,18 +1,8 @@
-use std::{
-    future::Future, pin::Pin, sync::{mpsc::{channel, Sender}, Arc, Mutex},
-    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
-    thread::{self, JoinHandle}, time::{Duration, Instant}
-};
-
 fn main() {
     let start = Instant::now();
-
-    // Many runtimes create a glocal `reactor` we pass it as an argument
     let reactor = Reactor::new();
-    let reactor = Arc::new(Mutex::new(reactor));
-    
-    let future1 = Task::new(reactor.clone(), 2, 1);
-    let future2 = Task::new(reactor.clone(), 1, 2);
+    let future1 = Task::new(reactor.clone(), 1, 1);
+    let future2 = Task::new(reactor.clone(), 2, 2);
 
     let fut1 = async {
         let val = future1.await;
@@ -34,15 +24,24 @@ fn main() {
     block_on(mainfut);
     reactor.lock().map(|mut r| r.close()).unwrap();
 }
+use std::{
+    future::Future, pin::Pin, sync::{ mpsc::{channel, Sender}, Arc, Mutex,},
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker}, mem,
+    thread::{self, JoinHandle}, time::{Duration, Instant}, collections::HashMap
+};
 
 // ============================= EXECUTOR ====================================
 fn block_on<F: Future>(mut future: F) -> F::Output {
-    let mywaker = Arc::new(MyWaker{ thread: thread::current() }); 
+    let mywaker = Arc::new(MyWaker {
+        thread: thread::current(),
+    });
     let waker = waker_into_waker(Arc::into_raw(mywaker));
     let mut cx = Context::from_waker(&waker);
+
+    // SAFETY: we shadow `future` so it can't be accessed again.
+    let mut future = unsafe { Pin::new_unchecked(&mut future) };
     let val = loop {
-        let pinned = unsafe { Pin::new_unchecked(&mut future) };
-        match Future::poll(pinned, &mut cx) {
+        match Future::poll(future.as_mut(), &mut cx) {
             Poll::Ready(val) => break val,
             Poll::Pending => thread::park(),
         };
@@ -59,29 +58,28 @@ struct MyWaker {
 #[derive(Clone)]
 pub struct Task {
     id: usize,
-    reactor: Arc<Mutex<Reactor>>,
+    reactor: Arc<Mutex<Box<Reactor>>>,
     data: u64,
-    is_registered: bool,
 }
 
 fn mywaker_wake(s: &MyWaker) {
     let waker_ptr: *const MyWaker = s;
-    let waker_arc = unsafe {Arc::from_raw(waker_ptr)};
+    let waker_arc = unsafe { Arc::from_raw(waker_ptr) };
     waker_arc.thread.unpark();
 }
 
 fn mywaker_clone(s: &MyWaker) -> RawWaker {
-    let arc = unsafe { Arc::from_raw(s).clone() };
+    let arc = unsafe { Arc::from_raw(s) };
     std::mem::forget(arc.clone()); // increase ref count
     RawWaker::new(Arc::into_raw(arc) as *const (), &VTABLE)
 }
 
 const VTABLE: RawWakerVTable = unsafe {
     RawWakerVTable::new(
-        |s| mywaker_clone(&*(s as *const MyWaker)),     // clone
-        |s| mywaker_wake(&*(s as *const MyWaker)),      // wake
-        |s| mywaker_wake(*(s as *const &MyWaker)),      // wake by ref
-        |s| drop(Arc::from_raw(s as *const MyWaker)),   // decrease refcount
+        |s| mywaker_clone(&*(s as *const MyWaker)),   // clone
+        |s| mywaker_wake(&*(s as *const MyWaker)),    // wake
+        |s| mywaker_wake(*(s as *const &MyWaker)),    // wake by ref
+        |s| drop(Arc::from_raw(s as *const MyWaker)), // decrease refcount
     )
 };
 
@@ -91,96 +89,106 @@ fn waker_into_waker(s: *const MyWaker) -> Waker {
 }
 
 impl Task {
-    fn new(reactor: Arc<Mutex<Reactor>>, data: u64, id: usize) -> Self {
-        Task {
-            id,
-            reactor,
-            data,
-            is_registered: false,
-        }
+    fn new(reactor: Arc<Mutex<Box<Reactor>>>, data: u64, id: usize) -> Self {
+        Task { id, reactor, data }
     }
 }
 
 impl Future for Task {
     type Output = usize;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut r = self.reactor.lock().unwrap();
         if r.is_ready(self.id) {
+            *r.tasks.get_mut(&self.id).unwrap() = TaskState::Finished;
             Poll::Ready(self.id)
-        } else if self.is_registered {
+        } else if r.tasks.contains_key(&self.id) {
+            r.tasks.insert(self.id, TaskState::NotReady(cx.waker().clone()));
             Poll::Pending
         } else {
             r.register(self.data, cx.waker().clone(), self.id);
-            drop(r);
-            self.is_registered = true;
             Poll::Pending
         }
     }
 }
 
 // =============================== REACTOR ===================================
+enum TaskState {
+    Ready,
+    NotReady(Waker),
+    Finished,
+}
 struct Reactor {
     dispatcher: Sender<Event>,
     handle: Option<JoinHandle<()>>,
-    readylist: Arc<Mutex<Vec<usize>>>,
+    tasks: HashMap<usize, TaskState>,
 }
+
 #[derive(Debug)]
 enum Event {
     Close,
-    Timeout(Waker, u64, usize),
+    Timeout(u64, usize),
 }
 
 impl Reactor {
-    fn new() -> Self {
+    fn new() -> Arc<Mutex<Box<Self>>> {
         let (tx, rx) = channel::<Event>();
-        let readylist = Arc::new(Mutex::new(vec![]));
-        let rl_clone = readylist.clone();
-        let mut handles = vec![];
+        let reactor = Arc::new(Mutex::new(Box::new(Reactor {
+            dispatcher: tx,
+            handle: None,
+            tasks: HashMap::new(),
+        })));
+        
+        let reactor_clone = Arc::downgrade(&reactor);
         let handle = thread::spawn(move || {
+            let mut handles = vec![];
             // This simulates some I/O resource
             for event in rx {
-                let rl_clone = rl_clone.clone();
+                println!("REACTOR: {:?}", event);
+                let reactor = reactor_clone.clone();
                 match event {
                     Event::Close => break,
-                    Event::Timeout(waker, duration, id) => {
+                    Event::Timeout(duration, id) => {
                         let event_handle = thread::spawn(move || {
                             thread::sleep(Duration::from_secs(duration));
-                            rl_clone.lock().map(|mut rl| rl.push(id)).unwrap();
-                            waker.wake();
+                            let reactor = reactor.upgrade().unwrap();
+                            reactor.lock().map(|mut r| r.wake(id)).unwrap();
                         });
-
                         handles.push(event_handle);
                     }
                 }
             }
-
-            for handle in handles {
-                handle.join().unwrap();
-            }
+            handles.into_iter().for_each(|handle| handle.join().unwrap());
         });
-
-        Reactor {
-            readylist,
-            dispatcher: tx,
-            handle: Some(handle),
-        }
+        reactor.lock().map(|mut r| r.handle = Some(handle)).unwrap();
+        reactor
     }
 
-    fn register(&mut self, duration: u64, waker: Waker, data: usize) {
-        self.dispatcher
-            .send(Event::Timeout(waker, duration, data))
-            .unwrap();
+    fn wake(&mut self, id: usize) {
+        self.tasks.get_mut(&id).map(|state| {
+            match mem::replace(state, TaskState::Ready) {
+                TaskState::NotReady(waker) => waker.wake(),
+                TaskState::Finished => panic!("Called 'wake' twice on task: {}", id),
+                _ => unreachable!()
+            }
+        }).unwrap();
+    }
+
+    fn register(&mut self, duration: u64, waker: Waker, id: usize) {
+        if self.tasks.insert(id, TaskState::NotReady(waker)).is_some() {
+            panic!("Tried to insert a task with id: '{}', twice!", id);
+        }
+        self.dispatcher.send(Event::Timeout(duration, id)).unwrap();
     }
 
     fn close(&mut self) {
         self.dispatcher.send(Event::Close).unwrap();
     }
 
-    fn is_ready(&self, id_to_check: usize) -> bool {
-        self.readylist
-            .lock()
-            .map(|rl| rl.iter().any(|id| *id == id_to_check))
-            .unwrap()
+    fn is_ready(&self, id: usize) -> bool {
+        self.tasks.get(&id).map(|state| match state {
+            TaskState::Ready => true,
+            _ => false,
+        }).unwrap_or(false)
     }
 }
 
