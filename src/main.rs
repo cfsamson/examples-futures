@@ -1,19 +1,15 @@
 fn main() {
     let start = Instant::now();
     let reactor = Reactor::new();
-    let future1 = Task::new(reactor.clone(), 1, 1);
-    let future2 = Task::new(reactor.clone(), 2, 2);
 
     let fut1 = async {
-        let val = future1.await;
-        let dur = (Instant::now() - start).as_secs_f32();
-        println!("Future got {} at time: {:.2}.", val, dur);
+        let val = Task::new(reactor.clone(), 1, 1).await;
+        println!("Got {} at time: {:.2}.", val, start.elapsed().as_secs_f32());
     };
 
     let fut2 = async {
-        let val = future2.await;
-        let dur = (Instant::now() - start).as_secs_f32();
-        println!("Future got {} at time: {:.2}.", val, dur);
+        let val = Task::new(reactor.clone(), 2, 2).await;
+        println!("Got {} at time: {:.2}.", val, start.elapsed().as_secs_f32());
     };
 
     let mainfut = async {
@@ -22,39 +18,52 @@ fn main() {
     };
 
     block_on(mainfut);
-    reactor.lock().map(|mut r| r.close()).unwrap();
 }
+
 use std::{
-    future::Future, pin::Pin, sync::{ mpsc::{channel, Sender}, Arc, Mutex,},
-    task::{Context, Poll, RawWaker, RawWakerVTable, Waker}, mem,
+    future::Future, sync::{ mpsc::{channel, Sender}, Arc, Mutex, Condvar},
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker}, mem, pin::Pin,
     thread::{self, JoinHandle}, time::{Duration, Instant}, collections::HashMap
 };
-
 // ============================= EXECUTOR ====================================
-fn block_on<F: Future>(mut future: F) -> F::Output {
-    let mywaker = Arc::new(MyWaker {
-        thread: thread::current(),
-    });
-    let waker = waker_into_waker(Arc::into_raw(mywaker));
-    let mut cx = Context::from_waker(&waker);
+#[derive(Default)]
+struct Parker(Mutex<bool>, Condvar);
 
-    // SAFETY: we shadow `future` so it can't be accessed again.
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    let val = loop {
-        match Future::poll(future.as_mut(), &mut cx) {
-            Poll::Ready(val) => break val,
-            Poll::Pending => thread::park(),
-        };
-    };
-    val
+impl Parker {
+    fn park(&self) {
+        let mut resumable = self.0.lock().unwrap();
+            while !*resumable {
+                resumable = self.1.wait(resumable).unwrap();
+            }
+        *resumable = false;
+    }
+
+    fn unpark(&self) {
+        *self.0.lock().unwrap() = true;
+        self.1.notify_one();
+    }
 }
 
+fn block_on<F: Future>(mut future: F) -> F::Output {
+    let parker = Arc::new(Parker::default());
+    let mywaker = Arc::new(MyWaker { parker: parker.clone() });
+    let waker = mywaker_into_waker(Arc::into_raw(mywaker));
+    let mut cx = Context::from_waker(&waker);
+    
+    // SAFETY: we shadow `future` so it can't be accessed again.
+    let mut future = unsafe { Pin::new_unchecked(&mut future) }; 
+    loop {
+        match Future::poll(future.as_mut(), &mut cx) {
+            Poll::Ready(val) => break val,
+            Poll::Pending => parker.park(),
+        };
+    }
+}
 // ====================== FUTURE IMPLEMENTATION ==============================
 #[derive(Clone)]
 struct MyWaker {
-    thread: thread::Thread,
+    parker: Arc<Parker>,
 }
-
 #[derive(Clone)]
 pub struct Task {
     id: usize,
@@ -63,9 +72,8 @@ pub struct Task {
 }
 
 fn mywaker_wake(s: &MyWaker) {
-    let waker_ptr: *const MyWaker = s;
-    let waker_arc = unsafe { Arc::from_raw(waker_ptr) };
-    waker_arc.thread.unpark();
+    let waker_arc = unsafe { Arc::from_raw(s) };
+    waker_arc.parker.unpark();
 }
 
 fn mywaker_clone(s: &MyWaker) -> RawWaker {
@@ -83,7 +91,7 @@ const VTABLE: RawWakerVTable = unsafe {
     )
 };
 
-fn waker_into_waker(s: *const MyWaker) -> Waker {
+fn mywaker_into_waker(s: *const MyWaker) -> Waker {
     let raw_waker = RawWaker::new(s as *const (), &VTABLE);
     unsafe { Waker::from_raw(raw_waker) }
 }
@@ -110,7 +118,6 @@ impl Future for Task {
         }
     }
 }
-
 // =============================== REACTOR ===================================
 enum TaskState {
     Ready,
@@ -141,9 +148,7 @@ impl Reactor {
         let reactor_clone = Arc::downgrade(&reactor);
         let handle = thread::spawn(move || {
             let mut handles = vec![];
-            // This simulates some I/O resource
             for event in rx {
-                println!("REACTOR: {:?}", event);
                 let reactor = reactor_clone.clone();
                 match event {
                     Event::Close => break,
@@ -164,13 +169,12 @@ impl Reactor {
     }
 
     fn wake(&mut self, id: usize) {
-        self.tasks.get_mut(&id).map(|state| {
-            match mem::replace(state, TaskState::Ready) {
-                TaskState::NotReady(waker) => waker.wake(),
-                TaskState::Finished => panic!("Called 'wake' twice on task: {}", id),
-                _ => unreachable!()
-            }
-        }).unwrap();
+        let state = self.tasks.get_mut(&id).unwrap();
+        match mem::replace(state, TaskState::Ready) {
+            TaskState::NotReady(waker) => waker.wake(),
+            TaskState::Finished => panic!("Called 'wake' twice on task: {}", id),
+            _ => unreachable!()
+        }
     }
 
     fn register(&mut self, duration: u64, waker: Waker, id: usize) {
@@ -178,10 +182,6 @@ impl Reactor {
             panic!("Tried to insert a task with id: '{}', twice!", id);
         }
         self.dispatcher.send(Event::Timeout(duration, id)).unwrap();
-    }
-
-    fn close(&mut self) {
-        self.dispatcher.send(Event::Close).unwrap();
     }
 
     fn is_ready(&self, id: usize) -> bool {
@@ -194,6 +194,7 @@ impl Reactor {
 
 impl Drop for Reactor {
     fn drop(&mut self) {
+        self.dispatcher.send(Event::Close).unwrap();
         self.handle.take().map(|h| h.join().unwrap()).unwrap();
     }
 }
